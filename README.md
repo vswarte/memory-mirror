@@ -9,8 +9,6 @@ This tool allows you to dump a process's memory regions for reverse engineering 
 
 ## How do I use this?
 
-### Dumping memory
-
 The latest usage instructions can always be retrieved by invoking:
 ```shell
 memory-mirror.exe help
