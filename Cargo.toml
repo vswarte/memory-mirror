@@ -1,0 +1,23 @@
+[package]
+name = "memory-mirror"
+version = "0.3.0"
+edition = "2024"
+authors = ["Vincent Swarte <vincent@vinsert.nl>"]
+
+[dependencies]
+sysinfo = "0.38"
+indicatif = "0.18"
+clap = { version = "4", features = ["derive"] }
+pelite = { version = "0.10", features = ["unstable"] }
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_System_SystemInformation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+]
