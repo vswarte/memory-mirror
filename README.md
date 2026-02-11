@@ -1,4 +1,4 @@
-# :mirror: memory-mirror
+# :mirror: Memory Mirror
 
 ## What is this?
 This tool allows you to dump a process's memory regions for reverse engineering purposes.
