@@ -45,7 +45,7 @@ Options:
   -p, --pid <PID>                Process ID of the process to dump
   -o, --output-dir <OUTPUT_DIR>  Directory to write the output to
   -s, --suspend-threads          Suspend all the threads before dumping
-  -f, --fixup-pe-headers         Correct the PE headers SizeOfRawData and PointerToRawData to point to the aligned start of the raw data. This makes it possible for Ghidra to find the entrypoint
+  -f, --fixup-pe-headers         Correct the PE headers SizeOfRawData and PointerToRawData to point to the aligned start of the raw data
   -h, --help                     Print help
   -V, --version                  Print version
 ```
