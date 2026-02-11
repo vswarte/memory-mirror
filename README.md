@@ -7,8 +7,7 @@ This tool allows you to dump a process's memory regions for reverse engineering 
  - Sometimes programs use obfuscation products that decrypts parts of the binary during runtime. This tool allows you to nab a copy of the executable where that process has been applied making the otherwise encrypted code readable.
  - Sometimes it's convenient to have a copy of the runtime heap memory inside of ghidra. Doing this allows you to immediately view the data targeted by some routine without needing to have a running instance of the program under a debugger.
 
-## How do I use this?
-
+## How
 The latest usage instructions can always be retrieved by invoking:
 ```shell
 memory-mirror.exe help
