@@ -1,10 +1,10 @@
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use indicatif::ProgressIterator;
-use pelite::{pe32, pe64, Wrap};
+use pelite::{Wrap, pe32, pe64};
 
 mod process;
 

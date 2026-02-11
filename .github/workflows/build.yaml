@@ -1,22 +1,42 @@
-on: [push]
-
 name: Build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build
-    runs-on: [windows-latest]
+    name: Build (Windows)
+    runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
-          override: true
-      - uses: actions-rs/cargo@v1
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --release --all-features --verbose
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
         with:
-          command: build
-          args: --release --all-features --verbose
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binaries
-          path: target/release/*.exe
+          name: binaries-windows
+          path: |
+            target/x86_64-pc-windows-msvc/release/*.exe
+          if-no-files-found: error

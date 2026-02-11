@@ -1,13 +1,15 @@
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::ops::Range;
 use sysinfo::System;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-use windows::Win32::System::Diagnostics::ToolHelp::{Module32First, Module32Next, Thread32First, Thread32Next, MODULEENTRY32, THREADENTRY32};
-use windows::Win32::System::Memory::{
-    VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_FREE,
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    MODULEENTRY32, Module32First, Module32Next, THREADENTRY32, Thread32First, Thread32Next,
 };
-use windows::Win32::System::Threading::{OpenThread, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME};
+use windows::Win32::System::Memory::{MEM_FREE, MEMORY_BASIC_INFORMATION, VirtualQueryEx};
+use windows::Win32::System::Threading::{
+    OpenThread, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
+};
 
 pub fn get_dumpable_processes() -> Vec<DumpableProcess> {
     let mut system = System::new();
@@ -146,13 +148,7 @@ pub fn suspend_threads(snapshot: HANDLE, process: u32) -> windows::core::Result<
     let mut handles = vec![];
     loop {
         if thread.th32OwnerProcessID == process {
-            let handle = unsafe {
-                OpenThread(
-                    THREAD_SUSPEND_RESUME,
-                    false,
-                    thread.th32ThreadID,
-                )
-            };
+            let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, thread.th32ThreadID) };
 
             if let Ok(handle) = handle {
                 handles.push(handle);
