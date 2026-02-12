@@ -1,14 +1,20 @@
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 use indicatif::ProgressIterator;
-use pelite::image::{IMAGE_DATA_DIRECTORY, IMAGE_DIRECTORY_ENTRY_BASERELOC, IMAGE_DIRECTORY_ENTRY_DEBUG, IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DIRECTORY_ENTRY_TLS, IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, IMAGE_DLLCHARACTERISTICS_GUARD_CF, IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH, IMAGE_DLLCHARACTERISTICS_NX_COMPAT};
+use pelite::image::{
+    IMAGE_DATA_DIRECTORY, IMAGE_DIRECTORY_ENTRY_BASERELOC, IMAGE_DIRECTORY_ENTRY_DEBUG,
+    IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DIRECTORY_ENTRY_TLS,
+    IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, IMAGE_DLLCHARACTERISTICS_GUARD_CF,
+    IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH,
+    IMAGE_DLLCHARACTERISTICS_NX_COMPAT,
+};
 use pelite::pe::Pe;
-use pelite::{pe32, pe64, FileMap, Wrap};
+use pelite::{FileMap, Wrap, pe32, pe64};
 
 mod process;
 
@@ -89,7 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pe = pe64::PeFile::from_bytes(&map)?;
             print_pe(&pe)?;
         }
-        Commands::SetAslr { image, enabled, out } => {
+        Commands::SetAslr {
+            image,
+            enabled,
+            out,
+        } => {
             let mut buffer = std::fs::read(image)?;
             patch_dynamic_base(&mut buffer, *enabled)?;
 
@@ -325,9 +335,18 @@ fn print_pe<'a, P: pelite::pe::Pe<'a>>(pe: &P) -> Result<(), Box<dyn std::error:
 
     let relocs = dd_present(dd, IMAGE_DIRECTORY_ENTRY_BASERELOC);
 
-    println!("x64 sec={} ts=0x{:08x}", coff.NumberOfSections, coff.TimeDateStamp);
-    println!("base=0x{:x} ep=0x{:x} (va=0x{:x}) img=0x{:x}", base, ep_rva, ep_va, opt.SizeOfImage);
-    println!("aslr={} relocs={} nx={} heva={} cfg={} seh={}", aslr, relocs, nx, heva, cfg, !no_seh);
+    println!(
+        "x64 sec={} ts=0x{:08x}",
+        coff.NumberOfSections, coff.TimeDateStamp
+    );
+    println!(
+        "base=0x{:x} ep=0x{:x} (va=0x{:x}) img=0x{:x}",
+        base, ep_rva, ep_va, opt.SizeOfImage
+    );
+    println!(
+        "aslr={} relocs={} nx={} heva={} cfg={} seh={}",
+        aslr, relocs, nx, heva, cfg, !no_seh
+    );
     println!(
         "dirs: imp={} exp={} tls={} dbg={}",
         dd_present(dd, IMAGE_DIRECTORY_ENTRY_IMPORT) as u8,

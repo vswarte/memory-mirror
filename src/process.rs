@@ -1,13 +1,13 @@
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::ops::Range;
 use sysinfo::System;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    Module32First, Module32Next, Thread32First, Thread32Next, MODULEENTRY32, THREADENTRY32,
+    MODULEENTRY32, Module32First, Module32Next, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows::Win32::System::Memory::{
-    VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_FREE, PAGE_GUARD, PAGE_NOACCESS,
+    MEM_COMMIT, MEM_FREE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQueryEx,
 };
 use windows::Win32::System::Threading::{
     OpenThread, ResumeThread, SuspendThread, THREAD_ALL_ACCESS,
@@ -205,10 +205,7 @@ pub fn read_range(process: HANDLE, range: &Range<isize>) -> windows::core::Resul
             let dst_off = read_start - (range.start as usize);
             let len = read_end - read_start;
 
-            if let Ok(chunk) = read_region(
-                process,
-                &((read_start as isize)..(read_end as isize)),
-            ) {
+            if let Ok(chunk) = read_region(process, &((read_start as isize)..(read_end as isize))) {
                 buffer[dst_off..dst_off + len].copy_from_slice(&chunk[..len]);
             }
         }
