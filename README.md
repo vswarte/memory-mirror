@@ -18,6 +18,8 @@ Example output:
 Usage: memory-mirror.exe <COMMAND>
 
 Commands:
+  info          Print image info
+  set-aslr      Set the ASLR bit on the specified image
   list          List any running processes that are available for dumping
   list-modules  List the modules of the provided process
   list-regions  List the memory regions of the provided process

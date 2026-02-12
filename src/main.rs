@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 use indicatif::ProgressIterator;
-use pelite::{pe32, pe64, Wrap};
+use pelite::image::{IMAGE_DATA_DIRECTORY, IMAGE_DIRECTORY_ENTRY_BASERELOC, IMAGE_DIRECTORY_ENTRY_DEBUG, IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DIRECTORY_ENTRY_TLS, IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, IMAGE_DLLCHARACTERISTICS_GUARD_CF, IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH, IMAGE_DLLCHARACTERISTICS_NX_COMPAT};
+use pelite::pe::Pe;
+use pelite::{pe32, pe64, FileMap, Wrap};
 
 mod process;
 
@@ -27,7 +29,25 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-
+    /// Print image info.
+    Info {
+        /// Path to the image you want to enable/disable ASLR for.
+        #[arg(short, long)]
+        image: PathBuf,
+    },
+    /// Set the ASLR bit on the specified image.
+    SetAslr {
+        /// Path to the image you want to enable/disable ASLR for.
+        #[arg(short, long)]
+        image: PathBuf,
+        /// Whether the ASLR bit should be on or off.
+        #[arg(action = ArgAction::Set, long, required = true)]
+        enabled: bool,
+        /// Path to write the modified image to, if this isn't specified it will do it in
+        /// in-place.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// List any running processes that are available for dumping.
     List,
     /// List the modules of the provided process.
@@ -64,6 +84,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     match &args.command {
+        Commands::Info { image } => {
+            let map = FileMap::open(image)?;
+            let pe = pe64::PeFile::from_bytes(&map)?;
+            print_pe(&pe)?;
+        }
+        Commands::SetAslr { image, enabled, out } => {
+            let mut buffer = std::fs::read(image)?;
+            patch_dynamic_base(&mut buffer, *enabled)?;
+
+            let out = out.clone().unwrap_or(image.clone());
+            std::fs::write(out, &buffer)?;
+
+            println!("Patched DYNAMIC_BASE to {enabled}");
+        }
         Commands::List => {
             for process in get_dumpable_processes().iter() {
                 println!("{}\t{}", process.pid, process.name)
@@ -178,11 +212,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Patch the PE header to make PointerToRawData point to the virtual start of the exe.
-fn patch_section_headers(buffer: &mut [u8]) -> pelite::Result<()> {
-    let pe = pe64::PeFile::from_bytes(&*buffer)?;
+fn patch_dynamic_base(buffer: &mut [u8], enabled: bool) -> pelite::Result<()> {
+    // Make sure we're operating on a valid PE image.
+    let _ = pelite::PeFile::from_bytes(&*buffer)?;
+    let (_dos, nt, _dirs, _sections) = unsafe { pe64::headers_mut(buffer) };
 
-    // Safety: pelite already validated `buffer` as a PE in the line above.
+    if enabled {
+        nt.OptionalHeader.DllCharacteristics |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+    } else {
+        nt.OptionalHeader.DllCharacteristics &= !IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+    }
+
+    Ok(())
+}
+
+/// Patch the PE header to make PointerToRawData point to the virtual start of the image.
+fn patch_section_headers(buffer: &mut [u8]) -> pelite::Result<()> {
+    let _ = pe64::PeFile::from_bytes(&*buffer)?;
+
+    // Safety: pelite already validated `buffer` as a PE by PeFile::from_bytes.
     let (_dos, _nt, _dirs, sections) = unsafe { pe64::headers_mut(buffer) };
 
     for sh in sections.iter_mut() {
@@ -247,4 +295,46 @@ fn merge_ranges(mut ranges: Vec<Range<isize>>) -> Vec<Range<isize>> {
     out.push(cur);
 
     out
+}
+
+fn dd_present(dd: &[IMAGE_DATA_DIRECTORY], idx: usize) -> bool {
+    dd.get(idx)
+        .map(|d| d.VirtualAddress != 0 && d.Size != 0)
+        .unwrap_or(false)
+}
+
+fn print_pe<'a, P: pelite::pe::Pe<'a>>(pe: &P) -> Result<(), Box<dyn std::error::Error>> {
+    fn has(flags: u16, flag: u16) -> bool {
+        (flags & flag) != 0
+    }
+
+    let coff = pe.file_header();
+    let opt = pe.optional_header();
+    let dll = opt.DllCharacteristics;
+    let dd = pe.data_directory();
+
+    let ep_rva = opt.AddressOfEntryPoint as u64;
+    let base = opt.ImageBase;
+    let ep_va = base + ep_rva;
+
+    let aslr = has(dll, IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE);
+    let nx = has(dll, IMAGE_DLLCHARACTERISTICS_NX_COMPAT);
+    let heva = has(dll, IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA);
+    let cfg = has(dll, IMAGE_DLLCHARACTERISTICS_GUARD_CF);
+    let no_seh = has(dll, IMAGE_DLLCHARACTERISTICS_NO_SEH);
+
+    let relocs = dd_present(dd, IMAGE_DIRECTORY_ENTRY_BASERELOC);
+
+    println!("x64 sec={} ts=0x{:08x}", coff.NumberOfSections, coff.TimeDateStamp);
+    println!("base=0x{:x} ep=0x{:x} (va=0x{:x}) img=0x{:x}", base, ep_rva, ep_va, opt.SizeOfImage);
+    println!("aslr={} relocs={} nx={} heva={} cfg={} seh={}", aslr, relocs, nx, heva, cfg, !no_seh);
+    println!(
+        "dirs: imp={} exp={} tls={} dbg={}",
+        dd_present(dd, IMAGE_DIRECTORY_ENTRY_IMPORT) as u8,
+        dd_present(dd, IMAGE_DIRECTORY_ENTRY_EXPORT) as u8,
+        dd_present(dd, IMAGE_DIRECTORY_ENTRY_TLS) as u8,
+        dd_present(dd, IMAGE_DIRECTORY_ENTRY_DEBUG) as u8,
+    );
+
+    Ok(())
 }
