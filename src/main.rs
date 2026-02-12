@@ -1,10 +1,12 @@
-use std::fs::{File, create_dir_all};
+use std::collections::HashMap;
+use std::fs::{create_dir_all, File};
 use std::io::Write;
+use std::ops::Range;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use indicatif::ProgressIterator;
-use pelite::{Wrap, pe32, pe64};
+use pelite::{pe32, pe64, Wrap};
 
 mod process;
 
@@ -25,6 +27,7 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+
     /// List any running processes that are available for dumping.
     List,
     /// List the modules of the provided process.
@@ -133,30 +136,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let modules = enumerate_modules(snapshot)?;
-            for region in enumerate_regions(process_handle).into_iter().progress() {
-                let Ok(mut memory) = read_region(process_handle, &region.range) else {
+            let regions = enumerate_regions(process_handle);
+
+            let (modules, regions) = regions_by_modules(&modules, &regions);
+
+            for (module_name, ranges) in modules.iter().progress() {
+                for range in ranges {
+                    let Ok(mut memory) = read_range(process_handle, range) else {
+                        continue;
+                    };
+
+                    if *fixup_pe_headers {
+                        patch_section_headers(memory.as_mut_slice())?;
+                    }
+
+                    let filename =
+                        format!("{:x}-{:x}-{}.dump", range.start, range.end, module_name);
+
+                    let mut file = File::create(output_dir.join(filename))?;
+                    file.write_all(&memory)?;
+                }
+            }
+
+            for region in regions.iter().progress() {
+                let Ok(memory) = read_region(process_handle, region) else {
                     continue;
                 };
 
-                let module = modules
-                    .iter()
-                    .find(|m| m.range.contains(&region.range.start));
+                let filename = format!("{:x}-{:x}-UNK.dump", region.start, region.end,);
 
-                let file_name = if let Some(module) = module {
-                    format!(
-                        "{:x}-{:x}-{}.dump",
-                        region.range.start, region.range.end, module.name
-                    )
-                } else {
-                    format!("{:x}-{:x}-UNK.dump", region.range.start, region.range.end)
-                };
-
-                if *fixup_pe_headers && module.is_some() {
-                    patch_section_headers(memory.as_mut_slice())?;
-                }
-
-                let mut file = File::create(output_dir.join(file_name))?;
-                file.write_all(memory.as_slice())?;
+                let mut file = File::create(output_dir.join(filename))?;
+                file.write_all(&memory)?;
             }
 
             if *suspend_threads {
@@ -169,30 +179,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Patch the PE header to make PointerToRawData point to the virtual start of the exe.
-pub fn patch_section_headers(buffer: &mut [u8]) -> pelite::Result<()> {
-    // Validate the PE header by passing it through from_bytes.
-    let pe = pelite::PeFile::from_bytes(&*buffer)?;
+fn patch_section_headers(buffer: &mut [u8]) -> pelite::Result<()> {
+    let pe = pe64::PeFile::from_bytes(&*buffer)?;
 
-    match pe {
-        Wrap::T32(_) => {
-            // Safety: pelite already validated `buffer` as a PE in the line above.
-            let (_dos, _nt, _dirs, sections) = unsafe { pe32::headers_mut(buffer) };
+    // Safety: pelite already validated `buffer` as a PE in the line above.
+    let (_dos, _nt, _dirs, sections) = unsafe { pe64::headers_mut(buffer) };
 
-            for sh in sections.iter_mut() {
-                sh.SizeOfRawData = sh.VirtualSize;
-                sh.PointerToRawData = sh.VirtualAddress;
-            }
-        }
-        Wrap::T64(_) => {
-            // Safety: pelite already validated `buffer` as a PE in the line above.
-            let (_dos, _nt, _dirs, sections) = unsafe { pe64::headers_mut(buffer) };
-
-            for sh in sections.iter_mut() {
-                sh.SizeOfRawData = sh.VirtualSize;
-                sh.PointerToRawData = sh.VirtualAddress;
-            }
-        }
+    for sh in sections.iter_mut() {
+        sh.SizeOfRawData = sh.VirtualSize;
+        sh.PointerToRawData = sh.VirtualAddress;
     }
 
     Ok(())
+}
+
+type ModuleRegionMap = HashMap<String, Vec<Range<isize>>>;
+
+fn regions_by_modules(
+    modules: &[ProcessModule],
+    regions: &[MemoryRegion],
+) -> (ModuleRegionMap, Vec<Range<isize>>) {
+    let mut by_mod: ModuleRegionMap = HashMap::new();
+    let mut unknown = Vec::new();
+
+    for region in regions {
+        let owner = modules
+            .iter()
+            .find(|m| region.range.start < m.range.end && region.range.end > m.range.start);
+
+        if let Some(m) = owner {
+            by_mod
+                .entry(m.name.clone())
+                .or_default()
+                .push(region.range.clone());
+        } else {
+            unknown.push(region.range.clone());
+        }
+    }
+
+    for ranges in by_mod.values_mut() {
+        *ranges = merge_ranges(std::mem::take(ranges));
+    }
+    unknown = merge_ranges(unknown);
+
+    (by_mod, unknown)
+}
+
+fn merge_ranges(mut ranges: Vec<Range<isize>>) -> Vec<Range<isize>> {
+    if ranges.is_empty() {
+        return ranges;
+    }
+
+    ranges.sort_by_key(|r| r.start);
+
+    let mut out = Vec::with_capacity(ranges.len());
+    let mut cur = ranges[0].clone();
+
+    for r in ranges.into_iter().skip(1) {
+        if r.start <= cur.end {
+            cur.end = cur.end.max(r.end);
+        } else {
+            out.push(cur);
+            cur = r;
+        }
+    }
+
+    out.push(cur);
+
+    out
 }

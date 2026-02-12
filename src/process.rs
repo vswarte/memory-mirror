@@ -1,14 +1,16 @@
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::ops::Range;
 use sysinfo::System;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    MODULEENTRY32, Module32First, Module32Next, THREADENTRY32, Thread32First, Thread32Next,
+    Module32First, Module32Next, Thread32First, Thread32Next, MODULEENTRY32, THREADENTRY32,
 };
-use windows::Win32::System::Memory::{MEM_FREE, MEMORY_BASIC_INFORMATION, VirtualQueryEx};
+use windows::Win32::System::Memory::{
+    VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_FREE, PAGE_GUARD, PAGE_NOACCESS,
+};
 use windows::Win32::System::Threading::{
-    OpenThread, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
+    OpenThread, ResumeThread, SuspendThread, THREAD_ALL_ACCESS,
 };
 
 pub fn get_dumpable_processes() -> Vec<DumpableProcess> {
@@ -51,11 +53,13 @@ pub fn enumerate_modules(snapshot: HANDLE) -> windows::core::Result<Vec<ProcessM
             .unwrap()
             .to_string();
 
+        let base = current.modBaseAddr as isize;
+
         results.push(ProcessModule {
             name: module_name,
             range: Range {
-                start: current.hModule.0 as isize,
-                end: current.hModule.0 as isize + current.dwSize as isize,
+                start: base,
+                end: base + current.modBaseSize as isize,
             },
         });
 
@@ -148,7 +152,7 @@ pub fn suspend_threads(snapshot: HANDLE, process: u32) -> windows::core::Result<
     let mut handles = vec![];
     loop {
         if thread.th32OwnerProcessID == process {
-            let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, thread.th32ThreadID) };
+            let handle = unsafe { OpenThread(THREAD_ALL_ACCESS, false, thread.th32ThreadID) };
 
             if let Ok(handle) = handle {
                 handles.push(handle);
@@ -168,4 +172,50 @@ pub fn resume_threads(threads: Vec<HANDLE>) {
     for thread in threads.iter() {
         unsafe { ResumeThread(*thread) };
     }
+}
+
+/// Reads a regions memory from the target process.
+pub fn read_range(process: HANDLE, range: &Range<isize>) -> windows::core::Result<Vec<u8>> {
+    let size = (range.end - range.start) as usize;
+    let mut buffer = vec![0_u8; size];
+
+    let mut addr = range.start as usize;
+    while addr < range.end as usize {
+        let mut mbi = MEMORY_BASIC_INFORMATION::default();
+        unsafe {
+            VirtualQueryEx(
+                process,
+                Some(addr as *const c_void),
+                &mut mbi,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            );
+        }
+
+        let region_base = mbi.BaseAddress as usize;
+        let region_end = region_base.saturating_add(mbi.RegionSize);
+
+        let read_start = addr.max(range.start as usize);
+        let read_end = region_end.max(range.end as usize);
+
+        let readble = mbi.State == MEM_COMMIT
+            && (mbi.Protect.0 & PAGE_NOACCESS.0) == 0
+            && (mbi.Protect.0 & PAGE_GUARD.0) == 0;
+
+        if readble && read_end > read_start {
+            let dst_off = read_start - (range.start as usize);
+            let len = read_end - read_start;
+
+            if let Ok(chunk) = read_region(
+                process,
+                &((read_start as isize)..(read_end as isize)),
+            ) {
+                buffer[dst_off..dst_off + len].copy_from_slice(&chunk[..len]);
+            }
+        }
+
+        addr = read_end;
+        // addr = read_end;
+    }
+
+    Ok(buffer)
 }
