@@ -253,7 +253,6 @@ type ModuleRegionMap = HashMap<String, Vec<Range<isize>>>;
 
 fn regions_by_modules(modules: &[ProcessModule], regions: &[MemoryRegion]) -> ModuleRegionMap {
     let mut by_mod: ModuleRegionMap = HashMap::new();
-    let mut unknown = Vec::new();
 
     for region in regions {
         let owner = modules
@@ -265,8 +264,6 @@ fn regions_by_modules(modules: &[ProcessModule], regions: &[MemoryRegion]) -> Mo
                 .entry(m.name.clone())
                 .or_default()
                 .push(region.range.clone());
-        } else {
-            unknown.push(region.range.clone());
         }
     }
 
