@@ -13,8 +13,7 @@ use pelite::image::{
     IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH,
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT,
 };
-use pelite::pe::Pe;
-use pelite::{FileMap, Wrap, pe32, pe64};
+use pelite::{FileMap, pe64};
 
 mod process;
 
