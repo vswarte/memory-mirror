@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{File, create_dir_all};
+use std::fs::{create_dir_all, File};
 use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use pelite::image::{
     IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH,
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT,
 };
-use pelite::{FileMap, pe64};
+use pelite::{pe64, FileMap};
 
 mod process;
 
@@ -277,6 +277,7 @@ fn regions_by_modules(
     for ranges in by_mod.values_mut() {
         *ranges = merge_ranges(std::mem::take(ranges));
     }
+
     unknown = merge_ranges(unknown);
 
     (by_mod, unknown)
@@ -306,13 +307,13 @@ fn merge_ranges(mut ranges: Vec<Range<isize>>) -> Vec<Range<isize>> {
     out
 }
 
-fn dd_present(dd: &[IMAGE_DATA_DIRECTORY], idx: usize) -> bool {
-    dd.get(idx)
-        .map(|d| d.VirtualAddress != 0 && d.Size != 0)
-        .unwrap_or(false)
-}
-
 fn print_pe<'a, P: pelite::pe::Pe<'a>>(pe: &P) -> Result<(), Box<dyn std::error::Error>> {
+    fn dd_present(dd: &[IMAGE_DATA_DIRECTORY], idx: usize) -> bool {
+        dd.get(idx)
+            .map(|d| d.VirtualAddress != 0 && d.Size != 0)
+            .unwrap_or(false)
+    }
+
     fn has(flags: u16, flag: u16) -> bool {
         (flags & flag) != 0
     }

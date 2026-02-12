@@ -211,7 +211,6 @@ pub fn read_range(process: HANDLE, range: &Range<isize>) -> windows::core::Resul
         }
 
         addr = read_end;
-        // addr = read_end;
     }
 
     Ok(buffer)
