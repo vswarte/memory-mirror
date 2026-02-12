@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
+use std::fs::{File, create_dir_all};
 use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use pelite::image::{
     IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, IMAGE_DLLCHARACTERISTICS_NO_SEH,
     IMAGE_DLLCHARACTERISTICS_NX_COMPAT,
 };
-use pelite::{pe64, FileMap};
+use pelite::{FileMap, pe64};
 
 mod process;
 
@@ -181,8 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let modules = enumerate_modules(snapshot)?;
             let regions = enumerate_regions(process_handle);
 
-            let (modules, regions) = regions_by_modules(&modules, &regions);
-
+            let modules = regions_by_modules(&modules, &regions);
             for (module_name, ranges) in modules.iter().progress() {
                 for range in ranges {
                     let Ok(mut memory) = read_range(process_handle, range) else {
@@ -202,11 +201,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             for region in regions.iter().progress() {
-                let Ok(memory) = read_region(process_handle, region) else {
+                let Ok(memory) = read_region(process_handle, &region.range) else {
                     continue;
                 };
 
-                let filename = format!("{:x}-{:x}-UNK.dump", region.start, region.end,);
+                let filename = format!("{:x}-{:x}-UNK.dump", region.range.start, region.range.end,);
 
                 let mut file = File::create(output_dir.join(filename))?;
                 file.write_all(&memory)?;
@@ -252,10 +251,7 @@ fn patch_section_headers(buffer: &mut [u8]) -> pelite::Result<()> {
 
 type ModuleRegionMap = HashMap<String, Vec<Range<isize>>>;
 
-fn regions_by_modules(
-    modules: &[ProcessModule],
-    regions: &[MemoryRegion],
-) -> (ModuleRegionMap, Vec<Range<isize>>) {
+fn regions_by_modules(modules: &[ProcessModule], regions: &[MemoryRegion]) -> ModuleRegionMap {
     let mut by_mod: ModuleRegionMap = HashMap::new();
     let mut unknown = Vec::new();
 
@@ -278,9 +274,7 @@ fn regions_by_modules(
         *ranges = merge_ranges(std::mem::take(ranges));
     }
 
-    unknown = merge_ranges(unknown);
-
-    (by_mod, unknown)
+    by_mod
 }
 
 fn merge_ranges(mut ranges: Vec<Range<isize>>) -> Vec<Range<isize>> {
