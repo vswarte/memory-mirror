@@ -235,8 +235,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     };
 
-                    if *fixup_pe_headers && is_pe(&memory) {
-                        patch_section_headers(memory.as_mut_slice())?;
+                    if *fixup_pe_headers
+                        && is_pe(&memory)
+                        && let Err(err) = patch_section_headers(memory.as_mut_slice())
+                    {
+                        println!(
+                            "Error while patching section headers at {:#x}: {err}",
+                            range.start
+                        );
                     }
 
                     let filename =
@@ -267,8 +273,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .or_else(|| region.mapped_name.clone())
                     .unwrap_or_else(|| if is_pe_image { "Unknown.dll" } else { "UNK" }.to_string());
 
-                if *fixup_pe_headers && is_pe_image {
-                    patch_section_headers(memory.as_mut_slice())?;
+                if *fixup_pe_headers
+                    && is_pe_image
+                    && let Err(err) = patch_section_headers(memory.as_mut_slice())
+                {
+                    println!(
+                        "Error while patching section headers at {:#x}: {err}",
+                        region.range.start
+                    );
                 }
 
                 let filename = format!(
