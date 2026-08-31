@@ -15,8 +15,10 @@ use pelite::image::{
 };
 use pelite::{FileMap, pe64};
 
+mod identify;
 mod process;
 
+use crate::identify::{identify_pe_name, is_pe};
 use crate::process::*;
 
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -64,6 +66,11 @@ enum Commands {
     /// List the memory regions of the provided process.
     ListRegions {
         /// Process ID of the process to list regions for.
+        #[arg(short, long)]
+        pid: u32,
+    },
+    ListTls {
+        /// Process ID of the process to fetch TLS info for.
         #[arg(short, long)]
         pid: u32,
     },
@@ -144,7 +151,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }?;
 
             for region in enumerate_regions(process_handle).iter() {
-                println!("{:#X}..{:#X}", region.range.start, region.range.end)
+                println!(
+                    "{:#X}..{:#X}\t{}",
+                    region.range.start,
+                    region.range.end,
+                    region.mapped_name.as_deref().unwrap_or("")
+                )
+            }
+        }
+        Commands::ListTls { pid } => {
+            let processes = get_dumpable_processes();
+            let Some(process) = processes.iter().find(|f| f.pid == *pid) else {
+                panic!("Could not find process {pid}");
+            };
+
+            let process_handle = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                    false,
+                    process.pid,
+                )
+            }?;
+
+            let threads = process::enumerate_thread_tls(process.pid, process_handle)?;
+
+            println!("Target Process: {} ({})", process.name, process.pid);
+            println!(
+                "{:<12} | {:<20} | {:<20}",
+                "Thread ID", "TEB Base", "TLS Array Pointer"
+            );
+            println!("{:-<12}-+-{:-<20}-+-{:-<20}", "", "", "");
+
+            for t in threads {
+                println!(
+                    "{:<12} | {:#018X}   | {:#018X}",
+                    t.thread_id, t.teb_base, t.tls_array_ptr
+                );
             }
         }
         Commands::DumpRegions {
@@ -181,32 +223,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let modules = enumerate_modules(snapshot)?;
             let regions = enumerate_regions(process_handle);
 
-            let modules = regions_by_modules(&modules, &regions);
-            for (module_name, ranges) in modules.iter().progress() {
+            let modules_map = regions_by_modules(&modules, &regions);
+
+            // Collect all ranges that belong to a module
+            let mut dumped_ranges: std::collections::HashSet<(isize, isize)> =
+                std::collections::HashSet::new();
+
+            for (module_name, ranges) in modules_map.iter().progress() {
                 for range in ranges {
                     let Ok(mut memory) = read_range(process_handle, range) else {
                         continue;
                     };
 
-                    if *fixup_pe_headers {
+                    if *fixup_pe_headers && is_pe(&memory) {
                         patch_section_headers(memory.as_mut_slice())?;
                     }
 
                     let filename =
                         format!("{:x}-{:x}-{}.dump", range.start, range.end, module_name);
-
                     let mut file = File::create(output_dir.join(filename))?;
                     file.write_all(&memory)?;
+
+                    dumped_ranges.insert((range.start, range.end));
                 }
             }
 
             for region in regions.iter().progress() {
-                let Ok(memory) = read_region(process_handle, &region.range) else {
+                // Skip if this exact region was already dumped as part of a module
+                if dumped_ranges
+                    .iter()
+                    .any(|(start, end)| *start <= region.range.start && *end >= region.range.end)
+                {
+                    continue;
+                }
+
+                let Ok(mut memory) = read_region(process_handle, &region.range) else {
                     continue;
                 };
 
-                let filename = format!("{:x}-{:x}-UNK.dump", region.range.start, region.range.end,);
+                let is_pe_image = is_pe(&memory);
 
+                let name = identify_pe_name(&memory)
+                    .or_else(|| region.mapped_name.clone())
+                    .unwrap_or_else(|| if is_pe_image { "Unknown.dll" } else { "UNK" }.to_string());
+
+                if *fixup_pe_headers && is_pe_image {
+                    patch_section_headers(memory.as_mut_slice())?;
+                }
+
+                let filename = format!(
+                    "{:x}-{:x}-{}.dump",
+                    region.range.start, region.range.end, name
+                );
                 let mut file = File::create(output_dir.join(filename))?;
                 file.write_all(&memory)?;
             }

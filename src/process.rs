@@ -1,16 +1,19 @@
 use std::ffi::{CStr, c_void};
 use std::ops::Range;
 use sysinfo::System;
+use windows::Wdk::System::Threading::{NtQueryInformationThread, ThreadBasicInformation};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    MODULEENTRY32, Module32First, Module32Next, THREADENTRY32, Thread32First, Thread32Next,
+    CreateToolhelp32Snapshot, MODULEENTRY32, Module32First, Module32Next, TH32CS_SNAPTHREAD,
+    THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows::Win32::System::Memory::{
-    MEM_COMMIT, MEM_FREE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQueryEx,
+    MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQueryEx,
 };
+use windows::Win32::System::ProcessStatus::GetMappedFileNameW;
 use windows::Win32::System::Threading::{
-    OpenThread, ResumeThread, SuspendThread, THREAD_ALL_ACCESS,
+    OpenThread, ResumeThread, SuspendThread, THREAD_ALL_ACCESS, THREAD_QUERY_INFORMATION,
 };
 
 pub fn get_dumpable_processes() -> Vec<DumpableProcess> {
@@ -63,7 +66,6 @@ pub fn enumerate_modules(snapshot: HANDLE) -> windows::core::Result<Vec<ProcessM
             },
         });
 
-        // Getting an error here indicates that we've hit the end of the modules.
         if unsafe { Module32Next(snapshot, &mut current) }.is_err() {
             break;
         }
@@ -85,28 +87,34 @@ pub fn enumerate_regions(process: HANDLE) -> Vec<MemoryRegion> {
     let mut results = vec![];
 
     loop {
-        unsafe {
+        let queried = unsafe {
             VirtualQueryEx(
                 process,
                 current_address,
                 &mut current_entry,
                 size_of::<MEMORY_BASIC_INFORMATION>(),
-            );
-        }
+            )
+        };
 
+        if queried == 0 {
+            println!("VirtualQueryEx failed at address {:?} ", current_address,);
+            break;
+        }
         let base_address = current_entry.BaseAddress as usize;
         let next_address = (base_address + current_entry.RegionSize) as *const c_void;
 
-        if current_entry.State != MEM_FREE {
+        if current_entry.State == MEM_COMMIT {
+            let mapped_name = get_mapped_filename(process, current_entry.BaseAddress);
+
             results.push(MemoryRegion {
                 range: Range {
                     start: current_entry.BaseAddress as isize,
                     end: current_entry.BaseAddress as isize + current_entry.RegionSize as isize,
                 },
+                mapped_name,
             });
         }
 
-        // TODO: This will cause infinite loops when `current_address` gets back into a `None` state.
         if current_address.map(|a| a == next_address).unwrap_or(false) {
             break;
         }
@@ -117,9 +125,27 @@ pub fn enumerate_regions(process: HANDLE) -> Vec<MemoryRegion> {
     results
 }
 
+fn get_mapped_filename(process: HANDLE, addr: *mut c_void) -> Option<String> {
+    let mut buf = vec![0u16; 1024];
+    let len = unsafe { GetMappedFileNameW(process, addr, &mut buf) };
+    if len == 0 {
+        return None;
+    }
+
+    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    let filename = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+
+    if filename.is_empty() {
+        None
+    } else {
+        Some(filename)
+    }
+}
+
 #[derive(Debug)]
 pub struct MemoryRegion {
     pub range: Range<isize>,
+    pub mapped_name: Option<String>,
 }
 
 /// Reads a regions memory from the target process.
@@ -182,26 +208,31 @@ pub fn read_range(process: HANDLE, range: &Range<isize>) -> windows::core::Resul
     let mut addr = range.start as usize;
     while addr < range.end as usize {
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
-        unsafe {
+        let queried = unsafe {
             VirtualQueryEx(
                 process,
                 Some(addr as *const c_void),
                 &mut mbi,
                 std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-            );
+            )
+        };
+
+        if queried == 0 {
+            println!("VirtualQueryEx failed at address {:?} ", addr,);
+            break;
         }
 
         let region_base = mbi.BaseAddress as usize;
         let region_end = region_base.saturating_add(mbi.RegionSize);
 
         let read_start = addr.max(range.start as usize);
-        let read_end = region_end.max(range.end as usize);
+        let read_end = region_end.min(range.end as usize);
 
-        let readble = mbi.State == MEM_COMMIT
+        let readable = mbi.State == MEM_COMMIT
             && (mbi.Protect.0 & PAGE_NOACCESS.0) == 0
             && (mbi.Protect.0 & PAGE_GUARD.0) == 0;
 
-        if readble && read_end > read_start {
+        if readable && read_end > read_start {
             let dst_off = read_start - (range.start as usize);
             let len = read_end - read_start;
 
@@ -210,8 +241,93 @@ pub fn read_range(process: HANDLE, range: &Range<isize>) -> windows::core::Resul
             }
         }
 
-        addr = read_end;
+        addr = region_end;
     }
 
     Ok(buffer)
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct THREAD_BASIC_INFORMATION {
+    pub exit_status: i32,
+    pub teb_base_address: usize,
+    pub client_id_unique_process: usize,
+    pub client_id_unique_thread: usize,
+    pub affinity_mask: usize,
+    pub priority: i32,
+    pub base_priority: i32,
+}
+
+#[derive(Debug)]
+pub struct ThreadTlsInfo {
+    pub thread_id: u32,
+    pub teb_base: usize,
+    pub tls_array_ptr: usize,
+}
+
+pub fn enumerate_thread_tls(
+    process_id: u32,
+    process_handle: HANDLE,
+) -> windows::core::Result<Vec<ThreadTlsInfo>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, process_id) }?;
+
+    let mut thread = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+
+    unsafe { Thread32First(snapshot, &mut thread) }?;
+
+    let mut results = vec![];
+
+    loop {
+        if thread.th32OwnerProcessID == process_id
+            && let Ok(thread_handle) =
+                unsafe { OpenThread(THREAD_QUERY_INFORMATION, false, thread.th32ThreadID) }
+        {
+            let mut tbi = THREAD_BASIC_INFORMATION::default();
+            let mut ret_len = 0;
+
+            let status = unsafe {
+                NtQueryInformationThread(
+                    thread_handle,
+                    ThreadBasicInformation,
+                    &mut tbi as *mut _ as *mut std::ffi::c_void,
+                    size_of::<THREAD_BASIC_INFORMATION>() as u32,
+                    &mut ret_len,
+                )
+            };
+
+            if status.0 >= 0 {
+                let teb_base = tbi.teb_base_address;
+                let tls_ptr_addr = teb_base + 0x58;
+                let mut tls_array_ptr = 0usize;
+                let mut bytes_read = 0;
+
+                unsafe {
+                    ReadProcessMemory(
+                        process_handle,
+                        tls_ptr_addr as *const std::ffi::c_void,
+                        &mut tls_array_ptr as *mut _ as *mut std::ffi::c_void,
+                        size_of::<usize>(),
+                        Some(&mut bytes_read),
+                    )
+                    .expect("Failed to read process memory")
+                }
+
+                results.push(ThreadTlsInfo {
+                    thread_id: thread.th32ThreadID,
+                    teb_base,
+                    tls_array_ptr,
+                });
+            }
+        }
+
+        if unsafe { Thread32Next(snapshot, &mut thread) }.is_err() {
+            break;
+        }
+    }
+
+    Ok(results)
 }
